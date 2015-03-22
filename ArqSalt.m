@@ -1,75 +1,113 @@
-//
-//  ArqSalt.m
-//  Arq
-//
-//  Created by Stefan Reitshamer on 7/16/11.
-//  Copyright 2011 __MyCompanyName__. All rights reserved.
-//
+/*
+ Copyright (c) 2009-2014, Stefan Reitshamer http://www.haystacksoftware.com
+ 
+ All rights reserved.
+ 
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ 
+ * Redistributions of source code must retain the above copyright
+ notice, this list of conditions and the following disclaimer.
+ 
+ * Redistributions in binary form must reproduce the above copyright
+ notice, this list of conditions and the following disclaimer in the
+ documentation and/or other materials provided with the distribution.
+ 
+ * Neither the names of PhotoMinds LLC or Haystack Software, nor the names of
+ their contributors may be used to endorse or promote products derived from
+ this software without specific prior written permission.
+ 
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+ TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 
 #import "ArqSalt.h"
-#import "S3AuthorizationProvider.h"
-#import "S3Service.h"
-#import "Blob.h"
-#import "BlobACL.h"
 #import "NSFileManager_extra.h"
 #import "UserLibrary_Arq.h"
+#import "Target.h"
+#import "TargetConnection.h"
+#import "Streams.h"
+
 
 #define SALT_LENGTH (8)
 
-@interface ArqSalt (internal)
-- (NSData *)createRandomSalt;
-@end
 
 @implementation ArqSalt
-- (id)initWithAccessKeyID:(NSString *)theAccessKeyID
-          secretAccessKey:(NSString *)theSecretAccessKey
-             s3BucketName:(NSString *)theS3BucketName
-             computerUUID:(NSString *)theComputerUUID {
+- (id)initWithTarget:(Target *)theTarget
+           targetUID:(uid_t)theTargetUID
+           targetGID:(gid_t)theTargetGID
+        computerUUID:(NSString *)theComputerUUID {
     if (self = [super init]) {
-        accessKeyID = [theAccessKeyID retain];
-        secretAccessKey = [theSecretAccessKey retain];
-        s3BucketName = [theS3BucketName retain];
+        target = [theTarget retain];
+        uid = theTargetUID;
+        gid = theTargetGID;
         computerUUID = [theComputerUUID retain];
-        localPath = [[NSString alloc] initWithFormat:@"%@/Cache.noindex/%@/%@/salt.dat", [UserLibrary arqUserLibraryPath], s3BucketName, computerUUID];
-        s3Path = [[NSString alloc] initWithFormat:@"/%@/%@/salt", s3BucketName, computerUUID];
     }
     return self;
 }
 - (void)dealloc {
-    [accessKeyID release];
-    [secretAccessKey release];
-    [s3BucketName release];
+    [target release];
     [computerUUID release];
-    [localPath release];
-    [s3Path release];
     [super dealloc];
 }
 
-- (NSData *)salt:(NSError **)error {
-    NSData *ret = [NSData dataWithContentsOfFile:localPath options:NSUncachedRead error:error];
+- (NSData *)saltWithTargetConnectionDelegate:(id<TargetConnectionDelegate>)theDelegate error:(NSError **)error {
+    NSData *ret = [NSData dataWithContentsOfFile:[self localPath] options:NSUncachedRead error:error];
     if (ret == nil) {
-        S3AuthorizationProvider *sap = [[[S3AuthorizationProvider alloc] initWithAccessKey:accessKeyID secretKey:secretAccessKey] autorelease];
-        S3Service *s3 = [[[S3Service alloc] initWithS3AuthorizationProvider:sap useSSL:YES retryOnTransientError:NO] autorelease];
-        ret = [s3 dataAtPath:s3Path error:error];
-        if (ret == nil) {
-            return nil;
-        }
-        NSError *myError = nil;
-        if (![[NSFileManager defaultManager] ensureParentPathExistsForPath:localPath error:&myError]
-            || ![ret writeToFile:localPath options:NSAtomicWrite error:&myError]) {
-            HSLogError(@"error caching salt data to %@: %@", localPath, myError);
-        }
+        id <TargetConnection> targetConnection = [target newConnection];
+        do {
+            ret = [targetConnection saltDataForComputerUUID:computerUUID delegate:theDelegate error:error];
+            if (ret != nil) {
+                NSError *myError = nil;
+                if (![[NSFileManager defaultManager] ensureParentPathExistsForPath:[self localPath] targetUID:uid targetGID:gid error:&myError]
+                    || ![Streams writeData:ret atomicallyToFile:[self localPath] targetUID:uid targetGID:gid bytesWritten:NULL error:&myError]) {
+                    HSLogError(@"error caching salt data to %@: %@", [self localPath], myError);
+                }
+            }
+        } while(0);
+        [targetConnection release];
     }
     return ret;
 }
-@end
+- (BOOL)saveSalt:(NSData *)theSalt targetConnectionDelegate:(id<TargetConnectionDelegate>)theDelegate error:(NSError **)error {
+    id <TargetConnection> targetConnection = [target newConnection];
+    BOOL ret = YES;
+    do {
+        ret = [targetConnection setSaltData:theSalt forComputerUUID:computerUUID delegate:theDelegate error:error]
+        && [[NSFileManager defaultManager] ensureParentPathExistsForPath:[self localPath] targetUID:uid targetGID:gid error:error]
+        && [Streams writeData:theSalt atomicallyToFile:[self localPath] targetUID:uid targetGID:gid bytesWritten:NULL error:error];
+    } while (0);
+    [targetConnection release];
+    return ret;
+}
+- (NSData *)createSaltWithTargetConnectionDelegate:(id<TargetConnectionDelegate>)theDelegate error:(NSError **)error {
+    NSData *theSalt = [self createRandomSalt];
+    if (![self saveSalt:theSalt targetConnectionDelegate:theDelegate error:error]) {
+        return nil;
+    }
+    return theSalt;
+}
+            
 
-@implementation ArqSalt (internal)
+#pragma mark internal
 - (NSData *)createRandomSalt {
     unsigned char buf[SALT_LENGTH];
     for (NSUInteger i = 0; i < SALT_LENGTH; i++) {
         buf[i] = (unsigned char)(rand() % 256);
     }
     return [[[NSData alloc] initWithBytes:buf length:SALT_LENGTH] autorelease];
+}
+- (NSString *)localPath {
+    return [NSString stringWithFormat:@"%@/Cache.noindex/%@/%@/salt.dat", [UserLibrary arqUserLibraryPath], [target targetUUID], computerUUID];
 }
 @end

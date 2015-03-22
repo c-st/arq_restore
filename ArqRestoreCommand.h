@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2009, Stefan Reitshamer http://www.haystacksoftware.com
+ Copyright (c) 2009-2014, Stefan Reitshamer http://www.haystacksoftware.com
  
  All rights reserved.
  
@@ -13,7 +13,7 @@
  notice, this list of conditions and the following disclaimer in the
  documentation and/or other materials provided with the distribution.
  
- * Neither the names of PhotoMinds LLC or Haystack Software, nor the names of 
+ * Neither the names of PhotoMinds LLC or Haystack Software, nor the names of
  their contributors may be used to endorse or promote products derived from
  this software without specific prior written permission.
  
@@ -28,20 +28,21 @@
  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */ 
+ */
 
 
-@class S3Service;
+#import "S3RestorerDelegate.h"
+#import "S3GlacierRestorerDelegate.h"
+#import "GlacierRestorerDelegate.h"
+@class Target;
 
-@interface ArqRestoreCommand : NSObject {
-    NSString *accessKey;
-    NSString *secretKey;
-    NSString *encryptionPassword;
-    S3Service *s3;
-    NSString *path;
-    NSString *commitSHA1;
-    BOOL vFlag;
+
+@interface ArqRestoreCommand : NSObject <S3RestorerDelegate, S3GlacierRestorerDelegate, GlacierRestorerDelegate> {
+    Target *target;
+    unsigned long long maxRequested;
+    unsigned long long maxTransfer;
 }
-- (BOOL)readArgc:(int)argc argv:(const char **)argv;
-- (BOOL)execute:(NSError **)error;
+
+- (NSString *)errorDomain;
+- (BOOL)executeWithArgc:(int)argc argv:(const char **)argv error:(NSError **)error;
 @end
